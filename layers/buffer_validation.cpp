@@ -1206,7 +1206,13 @@ static inline bool CheckItgExtent(layer_data *device_data, const GLOBAL_CB_NODE 
         offset_extent_sum.width = static_cast<uint32_t>(abs(offset->x)) + extent->width;
         offset_extent_sum.height = static_cast<uint32_t>(abs(offset->y)) + extent->height;
         offset_extent_sum.depth = static_cast<uint32_t>(abs(offset->z)) + extent->depth;
-        if ((IsExtentAligned(extent, granularity) == false) && (IsExtentEqual(&offset_extent_sum, subresource_extent) == false)) {
+
+        bool x_ok = ((0 == SafeModulo(extent->width, granularity->width))   || (extent->width == offset_extent_sum.width));
+        bool y_ok = ((0 == SafeModulo(extent->height, granularity->height)) || (extent->height == offset_extent_sum.height));
+        bool z_ok = ((0 == SafeModulo(extent->depth, granularity->depth))   || (extent->depth == offset_extent_sum.depth));
+
+        if (!(x_ok && y_ok && z_ok)) {
+        //if ((IsExtentAligned(extent, granularity) == false) && (IsExtentEqual(&offset_extent_sum, subresource_extent) == false)) {
             skip |=
                 log_msg(report_data, VK_DEBUG_REPORT_ERROR_BIT_EXT, VK_DEBUG_REPORT_OBJECT_TYPE_COMMAND_BUFFER_EXT,
                         reinterpret_cast<uint64_t>(cb_node->commandBuffer), __LINE__, DRAWSTATE_IMAGE_TRANSFER_GRANULARITY, "DS",

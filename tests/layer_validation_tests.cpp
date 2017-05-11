@@ -17745,10 +17745,12 @@ TEST_F(VkLayerTest, ImageFormatLimits) {
     image_create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 }
 
+#define USE_MAINTENANCE1 1
+
 TEST_F(VkLayerTest, CopyImageTypeExtentMismatch) {
     // Image copy tests where format type and extents don't match
 
-#if 0
+#if USE_MAINTENANCE1
     // Include maintenance1 extension if available
     device_extension_names.push_back(VK_KHR_MAINTENANCE1_EXTENSION_NAME);
     InitFramework(instance_layer_names, instance_extension_names, device_extension_names, myDbgFunc, m_errorMonitor);
@@ -17923,6 +17925,131 @@ TEST_F(VkLayerTest, CopyImageTypeExtentMismatch) {
         m_errorMonitor->VerifyFound();
         copy_region.dstSubresource.layerCount = 1;
     }
+    m_commandBuffer->EndCommandBuffer();
+}
+
+TEST_F(VkLayerTest, CopyImageCompressedBlockAlignment) {
+    // Image copy tests on compressed images with block alignment errors
+
+    ASSERT_NO_FATAL_FAILURE(Init());
+
+    // Select a compressed format and verify support
+    VkPhysicalDeviceFeatures device_features = {};
+    ASSERT_NO_FATAL_FAILURE(GetPhysicalDeviceFeatures(&device_features));
+    VkFormat compressed_format = VK_FORMAT_UNDEFINED;
+    if (device_features.textureCompressionBC) {
+        compressed_format = VK_FORMAT_BC3_SRGB_BLOCK;
+    }
+    else if (device_features.textureCompressionETC2) {
+        compressed_format = VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK;
+    }
+    else if (device_features.textureCompressionASTC_LDR) {
+        compressed_format = VK_FORMAT_ASTC_4x4_UNORM_BLOCK;
+    }
+    
+    // Create images with full mip chain
+    VkImageCreateInfo ci;
+    ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ci.pNext = NULL;
+    ci.flags = 0;
+    ci.imageType = VK_IMAGE_TYPE_2D;
+    ci.format = compressed_format;
+    ci.extent = { 64, 64, 1 };
+    ci.mipLevels = 1;
+    ci.arrayLayers = 1;
+    ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ci.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    ci.queueFamilyIndexCount = 0;
+    ci.pQueueFamilyIndices = NULL;
+    ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    VkImageFormatProperties img_prop = {};
+    if (VK_SUCCESS != vkGetPhysicalDeviceImageFormatProperties(m_device->phy().handle(), ci.format, ci.imageType, ci.tiling,ci.usage, ci.flags, &img_prop))
+    {
+        printf("             No compressed formats supported - CopyImageCompressedBlockAlignment skipped.\n");
+        return;
+    }
+
+    // Create images
+    VkImageObj image_1(m_device);
+    image_1.init(&ci);
+    ASSERT_TRUE(image_1.initialized());
+
+    ci.extent = { 62, 62, 1 };  // slightly smaller
+    VkImageObj image_2(m_device);
+    image_2.init(&ci);
+    ASSERT_TRUE(image_2.initialized());
+
+    m_commandBuffer->BeginCommandBuffer();
+
+    VkImageCopy copy_region;
+    copy_region.extent = { 48, 48, 1 };
+    copy_region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    copy_region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    copy_region.srcSubresource.mipLevel = 0;
+    copy_region.dstSubresource.mipLevel = 0;
+    copy_region.srcSubresource.baseArrayLayer = 0;
+    copy_region.dstSubresource.baseArrayLayer = 0;
+    copy_region.srcSubresource.layerCount = 1;
+    copy_region.dstSubresource.layerCount = 1;
+    copy_region.srcOffset = { 0, 0, 0 };
+    copy_region.dstOffset = { 0, 0, 0 };
+
+    // Sanity check
+    m_errorMonitor->ExpectSuccess();
+    m_commandBuffer->CopyImage(image_1.image(), VK_IMAGE_LAYOUT_GENERAL, image_2.image(), VK_IMAGE_LAYOUT_GENERAL, 1, &copy_region);
+    m_errorMonitor->VerifyNotFound();
+
+    // Src, Dest offsets must be multiples of compressed block sizes {4, 4, 1}
+    // Since image transfer granularity is set to compressed block size, an ITG error is also triggered.
+    copy_region.srcOffset = { 2, 4, 0 };
+    m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT, VALIDATION_ERROR_01209);
+    m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT, "queue family image transfer granularity");
+    m_commandBuffer->CopyImage(image_1.image(), VK_IMAGE_LAYOUT_GENERAL, image_2.image(), VK_IMAGE_LAYOUT_GENERAL, 1, &copy_region);
+    m_errorMonitor->VerifyFound();
+    copy_region.srcOffset = { 12, 1, 0 };
+    m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT, VALIDATION_ERROR_01209);
+    m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT, "queue family image transfer granularity");
+    m_commandBuffer->CopyImage(image_1.image(), VK_IMAGE_LAYOUT_GENERAL, image_2.image(), VK_IMAGE_LAYOUT_GENERAL, 1, &copy_region);
+    m_errorMonitor->VerifyFound();
+    copy_region.srcOffset = { 0, 0, 0 };
+    copy_region.dstOffset = { 1, 0, 0 };
+    m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT, VALIDATION_ERROR_01214);
+    m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT, "queue family image transfer granularity");
+    m_commandBuffer->CopyImage(image_1.image(), VK_IMAGE_LAYOUT_GENERAL, image_2.image(), VK_IMAGE_LAYOUT_GENERAL, 1, &copy_region);
+    m_errorMonitor->VerifyFound();
+    copy_region.dstOffset = { 4, 1, 0 };
+    m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT, VALIDATION_ERROR_01214);
+    m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT, "queue family image transfer granularity");
+    m_commandBuffer->CopyImage(image_1.image(), VK_IMAGE_LAYOUT_GENERAL, image_2.image(), VK_IMAGE_LAYOUT_GENERAL, 1, &copy_region);
+    m_errorMonitor->VerifyFound();
+    copy_region.dstOffset = { 0, 0, 0 };
+
+    // Copy extent must be multiples of compressed block sizes {4, 4, 1} if not full width/height
+    copy_region.extent = { 62, 60, 1 };
+    m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT, VALIDATION_ERROR_01214);
+    m_commandBuffer->CopyImage(image_1.image(), VK_IMAGE_LAYOUT_GENERAL, image_2.image(), VK_IMAGE_LAYOUT_GENERAL, 1, &copy_region);
+    m_errorMonitor->VerifyFound();
+   /* copy_region.srcOffset = { 4, 1, 0 };
+    m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT, VALIDATION_ERROR_01209);
+    m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT, "queue family image transfer granularity");
+    m_commandBuffer->CopyImage(image_1.image(), VK_IMAGE_LAYOUT_GENERAL, image_2.image(), VK_IMAGE_LAYOUT_GENERAL, 1, &copy_region);
+    m_errorMonitor->VerifyFound();
+    copy_region.srcOffset = { 0, 0, 0 };
+    copy_region.dstOffset = { 1, 0, 0 };
+    m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT, VALIDATION_ERROR_01214);
+    m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT, "queue family image transfer granularity");
+    m_commandBuffer->CopyImage(image_1.image(), VK_IMAGE_LAYOUT_GENERAL, image_2.image(), VK_IMAGE_LAYOUT_GENERAL, 1, &copy_region);
+    m_errorMonitor->VerifyFound();
+    copy_region.dstOffset = { 4, 1, 0 };
+    m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT, VALIDATION_ERROR_01214);
+    m_errorMonitor->SetDesiredFailureMsg(VK_DEBUG_REPORT_ERROR_BIT_EXT, "queue family image transfer granularity");
+    m_commandBuffer->CopyImage(image_1.image(), VK_IMAGE_LAYOUT_GENERAL, image_2.image(), VK_IMAGE_LAYOUT_GENERAL, 1, &copy_region);
+    m_errorMonitor->VerifyFound();
+    copy_region.dstOffset = { 0, 0, 0 };
+*/
     m_commandBuffer->EndCommandBuffer();
 }
 
